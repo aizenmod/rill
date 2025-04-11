@@ -47,7 +47,9 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [workflowState, setWorkflowState] = useState<'idle' | 'planning' | 'commands' | 'code_generation' | 'complete'>('idle');
+  const [workflowState, setWorkflowState] = useState<
+    'idle' | 'planning' | 'commands' | 'setup' | 'dependencies' | 'code_generation' | 'complete'
+  >('idle');
   const [projectContext, setProjectContext] = useState<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -109,6 +111,11 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
         }
       }
       
+      // Check if this is a Vite project creation command that needs special handling
+      if (command.includes('npm create vite') || command.includes('npx create-vite')) {
+        return await executeNonInteractiveViteCommand(command);
+      }
+      
       // Execute the command in the main terminal if onRunCommand is available
       let success = false;
       if (onRunCommand) {
@@ -143,6 +150,101 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
       return success;
     } catch (error) {
       console.error('Error executing command:', error);
+      return false;
+    }
+  };
+
+  // Execute a Vite project creation command with non-interactive flags
+  const executeNonInteractiveViteCommand = async (command: string): Promise<boolean> => {
+    try {
+      // Parse the Vite command to extract project name and template
+      const parts = command.split(' ');
+      let projectName = 'react-vite-todo';
+      let template = 'react-ts';
+      
+      // Try to extract project name and template from the command
+      for (let i = 0; i < parts.length; i++) {
+        if (parts[i] === '--template' && i + 1 < parts.length) {
+          template = parts[i + 1];
+        } else if (!parts[i].startsWith('-') && 
+                  !parts[i].startsWith('npm') && 
+                  !parts[i].startsWith('npx') && 
+                  !parts[i].includes('vite')) {
+          projectName = parts[i];
+        }
+      }
+      
+      // Create a new non-interactive command
+      const nonInteractiveCommand = `npm create vite@latest ${projectName} -- --template ${template}`;
+      
+      setMessages(prev => [...prev, {
+        sender: 'assistant',
+        content: `Converting to non-interactive command:\n\`\`\`\n${nonInteractiveCommand}\n\`\`\``,
+        type: 'text'
+      }]);
+      
+      // Execute the non-interactive command
+      let success = false;
+      if (onRunCommand) {
+        success = await onRunCommand(nonInteractiveCommand);
+        
+        // If command failed, retry once after a short delay
+        if (!success) {
+          console.log('Command failed, retrying after delay...');
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          success = await onRunCommand(nonInteractiveCommand);
+        }
+      }
+      
+      // If successful, wait a moment and then cd into the project directory
+      if (success) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // Check if the directory was created
+        const dirStructure = await getDirectoryStructure();
+        if (dirStructure[projectName]) {
+          // CD into the project directory
+          const cdCommand = `cd ${projectName}`;
+          if (onRunCommand) {
+            await onRunCommand(cdCommand);
+          }
+          
+          setMessages(prev => [...prev, {
+            sender: 'assistant',
+            content: `Project created successfully. Now changing to project directory...`,
+            type: 'text'
+          }]);
+          
+          // Also change the working directory in WebContainer
+          const webcontainer = webcontainerService.getInstance();
+          if (webcontainer) {
+            try {
+              const process = await webcontainer.spawn('cd', [projectName]);
+              await process.exit;
+            } catch (error) {
+              console.warn('Error changing directory in WebContainer:', error);
+              // This is not critical, continue with the workflow
+            }
+          }
+          
+          // Install dependencies
+          const installCommand = 'npm install';
+          
+          setMessages(prev => [...prev, {
+            sender: 'assistant',
+            content: `Installing project dependencies with:\n\`\`\`\n${installCommand}\n\`\`\``,
+            type: 'command'
+          }]);
+          
+          if (onRunCommand) {
+            await onRunCommand(installCommand);
+          }
+        }
+      }
+      
+      return success;
+    } catch (error) {
+      console.error('Error executing non-interactive Vite command:', error);
       return false;
     }
   };
@@ -272,84 +374,68 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
     }
   };
 
-  // Start the multi-step project generation workflow
+  // Start the project generation workflow
   const startProjectWorkflow = async (message: string, intent: Intent) => {
     try {
-      // Step 1: Planning phase
       setWorkflowState('planning');
       setMessages(prev => [...prev, {
         sender: 'assistant',
-        content: 'I\'ll help you set up this project. First, let me plan the structure...',
+        content: 'Planning your project structure...',
         type: 'text'
       }]);
       
-      // Before executing any commands, ensure WebContainer is initialized
-      const webcontainerInstance = webcontainerService.getInstance();
-      if (!webcontainerInstance) {
-        setMessages(prev => [...prev, {
-          sender: 'assistant',
-          content: 'Initializing WebContainer environment. This may take a moment...',
-          type: 'text'
-        }]);
-        
-        // Wait for WebContainer to be ready
-        await new Promise<void>((resolve) => {
+      // Step 1: Plan project structure
+      const planningContext = {
+        userRequest: message,
+        currentState: "planning"
+      };
+      
+      // Call the planning API
+      const planResponse = await fetch(`${API_URL}/plan`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(planningContext),
+      });
+      
+      if (!planResponse.ok) {
+        throw new Error(`Error planning project: ${planResponse.statusText}`);
+      }
+      
+      // Start the WebContainer if it's not already started
+      if (!webcontainerService.getInstance()) {
+        // Wait for WebContainer to be ready with timeout
+        let containerReady = false;
+        const waitForWebContainer = new Promise<void>((resolve) => {
           const handleReady = () => {
+            containerReady = true;
             window.removeEventListener('webcontainer-ready', handleReady);
             resolve();
           };
           
-          if (webcontainerService.getInstance()) {
+          window.addEventListener('webcontainer-ready', handleReady);
+          
+          // Timeout after 20 seconds
+          setTimeout(() => {
+            window.removeEventListener('webcontainer-ready', handleReady);
+            if (!containerReady) {
+              console.error('Timed out waiting for WebContainer');
+            }
             resolve();
-          } else {
-            window.addEventListener('webcontainer-ready', handleReady);
-            
-            // Timeout after 15 seconds
-            setTimeout(() => {
-              window.removeEventListener('webcontainer-ready', handleReady);
-              resolve();
-            }, 15000);
-          }
+          }, 20000);
         });
         
-        // Check again after waiting
-        if (!webcontainerService.getInstance()) {
-          throw new Error('WebContainer initialization failed or timed out');
-        }
+        await waitForWebContainer;
       }
       
-      // Call the AI to create a project plan
-      const planPrompt = `
-        You are a software architect planning a project based on this request:
-        "${message}"
-        
-        Create a project plan with:
-        1. A list of dependencies to install
-        2. A file structure with key files
-        3. A description of the main components
-        
-        FORMAT YOUR RESPONSE AS JSON with this structure:
-        {
-          "projectName": "name of the project",
-          "description": "brief description",
-          "dependencies": ["list", "of", "dependencies"],
-          "devDependencies": ["list", "of", "dev", "dependencies"],
-          "fileStructure": [
-            { "path": "file/path.ext", "description": "what this file does" }
-          ],
-          "components": [
-            { "name": "ComponentName", "purpose": "what this component does" }
-          ]
-        }
-        
-        DO NOT include any text outside of the JSON structure. Return ONLY the JSON object.
-      `;
+      const planData = await planResponse.json();
+      const planResult = planData.response.result || '';
       
-      const planResponse = await useLLM(planPrompt);
-      // Extract and parse the JSON from the response
+      // Extract the project plan from the response
       let projectPlan;
       try {
-        projectPlan = extractJSON(planResponse);
+        projectPlan = extractJSON(planResult);
         setProjectContext(projectPlan);
         
         // Display the plan to the user
@@ -359,29 +445,86 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
                    `**Description**: ${projectPlan.description}\n\n` +
                    `**Dependencies**: ${projectPlan.dependencies.join(', ')}\n\n` +
                    `**File Structure**:\n${projectPlan.fileStructure.map(f => `- ${f.path}`).join('\n')}\n\n` +
-                   `I'll now set up the project structure and install dependencies...`,
+                   `I'll now set up the project structure...`,
           type: 'text'
         }]);
       } catch (error) {
         throw new Error(`Could not parse project plan: ${error.message}`);
       }
       
-      // Step 2: Generate and execute setup commands
-      setWorkflowState('commands');
+      // Step 2: Set up project framework
+      setWorkflowState('setup');
       
-      // Create command for project initialization
-      const initPrompt = `
-        Generate a command to initialize a new ${projectPlan.projectName} project.
-        Use npm or pnpm or yarn based on what's most appropriate for this type of project.
-      `;
+      // Create a non-interactive command for project initialization
+      const projectName = projectPlan.projectName || 'react-vite-todo';
+      const template = 'react-ts'; // Default to React TypeScript
+      const initCommand = `npm create vite@latest ${projectName} -- --template ${template}`;
       
-      const commandContext = {
-        userRequest: initPrompt,
+      setMessages(prev => [...prev, {
+        sender: 'assistant',
+        content: `Setting up project with command:\n\`\`\`\n${initCommand}\n\`\`\``,
+        type: 'command'
+      }]);
+      
+      // Execute the initialization command and wait for completion
+      const initSuccess = await executeNonInteractiveViteCommand(initCommand);
+      if (!initSuccess) {
+        throw new Error("Project initialization failed");
+      }
+      
+      // Wait a moment for the filesystem to update
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Step 3: Read the project structure
+      const projectStructure = await getDirectoryStructure();
+      
+      // Step 4: Install additional dependencies if needed
+      setWorkflowState('dependencies');
+      if (projectPlan.dependencies.length > 0) {
+        const additionalDeps = projectPlan.dependencies.filter(
+          dep => dep !== 'react' && dep !== 'react-dom'
+        );
+        
+        if (additionalDeps.length > 0) {
+          const depInstallCommand = `npm install ${additionalDeps.join(' ')}`;
+          
+          setMessages(prev => [...prev, {
+            sender: 'assistant',
+            content: `Installing additional dependencies with command:\n\`\`\`\n${depInstallCommand}\n\`\`\``,
+            type: 'command'
+          }]);
+          
+          // Execute the dependency installation command
+          const depSuccess = await executeCommand(depInstallCommand);
+          if (!depSuccess) {
+            console.warn("Additional dependencies installation had issues, continuing with project setup");
+          }
+          
+          // Wait a moment for dependencies to install
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      }
+      
+      // Step 5: Generate code based on the updated project structure
+      setWorkflowState('code_generation');
+      setMessages(prev => [...prev, {
+        sender: 'assistant',
+        content: `Now generating code for your ${projectName} project based on the current structure...`,
+        type: 'text'
+      }]);
+      
+      // Read the directory structure again after dependency installation
+      const updatedDirectoryStructure = await getDirectoryStructure();
+      
+      // Call the code generation endpoint with directory structure
+      const codeGenContext = {
+        userRequest: message,
         projectPlan: projectPlan,
-        currentState: "initializing project"
+        currentState: "generating code files",
+        directoryStructure: updatedDirectoryStructure
       };
       
-      const initCommandResponse = await fetch(`${API_URL}/act`, {
+      const codeGenResponse = await fetch(`${API_URL}/act`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -389,184 +532,58 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
         body: JSON.stringify({ 
           intent: {
             understood: true,
-            type: 'command_generation',
-            details: 'generate a command to initialize the project',
+            type: 'code_generation',
+            details: 'generate code files for the project',
             requiresMoreInfo: false
           }, 
-          message: JSON.stringify(commandContext)
+          message: JSON.stringify(codeGenContext) 
         }),
       });
       
-      if (!initCommandResponse.ok) {
-        throw new Error(`Error generating init command: ${initCommandResponse.statusText}`);
+      if (!codeGenResponse.ok) {
+        throw new Error(`Error generating code: ${codeGenResponse.statusText}`);
       }
       
-      const initCommandData = await initCommandResponse.json();
-      let initCommand = '';
-      let initSuccess = false;
+      const codeGenData = await codeGenResponse.json();
       
       try {
-        const commandObj = typeof initCommandData.response.result === 'string' 
-          ? JSON.parse(initCommandData.response.result) 
-          : initCommandData.response.result;
+        const codeResult = typeof codeGenData.response.result === 'string' 
+          ? extractJSON(codeGenData.response.result)
+          : codeGenData.response.result;
+        
+        if (codeResult && codeResult.files && Array.isArray(codeResult.files)) {
+          // Create files in the webcontainer
+          await createFiles(codeResult.files);
           
-        if (commandObj && commandObj.command) {
-          initCommand = commandObj.command;
-          
+          // Show summary message
+          const fileNames = codeResult.files.map((file: CodeFile) => file.filename).join(', ');
           setMessages(prev => [...prev, {
             sender: 'assistant',
-            content: `Initializing project with command:\n\`\`\`\n${initCommand}\n\`\`\``,
+            content: `I've created the following files for your project:\n${codeResult.files.map((file: CodeFile) => `- ${file.filename}`).join('\n')}\n\nYou can now view and edit these files in the editor.`,
+            type: 'text'
+          }]);
+          
+          // Step 6: Start the development server
+          setMessages(prev => [...prev, {
+            sender: 'assistant',
+            content: `Starting the development server with:\n\`\`\`\nnpm run dev\n\`\`\``,
             type: 'command'
           }]);
           
-          // Execute the initialization command and wait for completion
-          initSuccess = await executeCommand(initCommand);
-          if (!initSuccess) {
-            throw new Error("Project initialization failed");
+          // Execute the dev command
+          if (onRunCommand) {
+            await onRunCommand('npm run dev');
           }
+          
+          // Step 7: Workflow complete
+          setWorkflowState('complete');
+        } else {
+          throw new Error('Invalid code generation result');
         }
       } catch (error) {
-        console.error('Error parsing init command:', error);
-        throw new Error(`Failed to generate valid initialization command: ${error.message}`);
+        console.error('Error processing code generation:', error);
+        throw new Error(`Failed to generate valid code: ${error.message}`);
       }
-      
-      // Step 3: Install dependencies
-      let dependenciesInstalled = false;
-      if (projectPlan.dependencies.length > 0 || projectPlan.devDependencies.length > 0) {
-        // Generate dependency installation command
-        const dependencyPrompt = `
-          Generate a command to install these dependencies: ${projectPlan.dependencies.join(', ')}
-          And these dev dependencies: ${projectPlan.devDependencies.join(', ')}
-          Use the appropriate package manager (npm, yarn, or pnpm).
-        `;
-        
-        const depCommandContext = {
-          userRequest: dependencyPrompt,
-          projectPlan: projectPlan,
-          currentState: "installing dependencies"
-        };
-        
-        const depCommandResponse = await fetch(`${API_URL}/act`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ 
-            intent: {
-              understood: true,
-              type: 'command_generation',
-              details: 'generate a command to install dependencies',
-              requiresMoreInfo: false
-            }, 
-            message: JSON.stringify(depCommandContext)
-          }),
-        });
-        
-        if (!depCommandResponse.ok) {
-          throw new Error(`Error generating dependency command: ${depCommandResponse.statusText}`);
-        }
-        
-        const depCommandData = await depCommandResponse.json();
-        
-        try {
-          const commandObj = typeof depCommandData.response.result === 'string' 
-            ? JSON.parse(depCommandData.response.result) 
-            : depCommandData.response.result;
-            
-          if (commandObj && commandObj.command) {
-            const depCommand = commandObj.command;
-            
-            setMessages(prev => [...prev, {
-              sender: 'assistant',
-              content: `Installing dependencies with command:\n\`\`\`\n${depCommand}\n\`\`\``,
-              type: 'command'
-            }]);
-            
-            // Execute the dependency installation command and wait for it to complete
-            dependenciesInstalled = await executeCommand(depCommand);
-          }
-        } catch (error) {
-          console.error('Error parsing dependency command:', error);
-          throw new Error(`Failed to generate valid dependency installation command: ${error.message}`);
-        }
-      } else {
-        // If there are no dependencies, mark as installed
-        dependenciesInstalled = true;
-      }
-      
-      // Step 4: Get directory structure after setup is complete
-      if (dependenciesInstalled) {
-        // Read the current directory structure
-        const directoryStructure = await getDirectoryStructure();
-        
-        // Generate code for the project with directory structure info
-        setWorkflowState('code_generation');
-        setMessages(prev => [...prev, {
-          sender: 'assistant',
-          content: `Now generating code for your ${projectPlan.projectName} project based on the current structure...`,
-          type: 'text'
-        }]);
-        
-        // Call the code generation endpoint with directory structure
-        const codeGenContext = {
-          userRequest: message,
-          projectPlan: projectPlan,
-          currentState: "generating code files",
-          directoryStructure: directoryStructure
-        };
-        
-        const codeGenResponse = await fetch(`${API_URL}/act`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ 
-            intent: {
-              understood: true,
-              type: 'code_generation',
-              details: 'generate code files for the project',
-              requiresMoreInfo: false
-            }, 
-            message: JSON.stringify(codeGenContext) 
-          }),
-        });
-        
-        if (!codeGenResponse.ok) {
-          throw new Error(`Error generating code: ${codeGenResponse.statusText}`);
-        }
-        
-        const codeGenData = await codeGenResponse.json();
-        
-        try {
-          const codeResult = typeof codeGenData.response.result === 'string' 
-            ? extractJSON(codeGenData.response.result)
-            : codeGenData.response.result;
-          
-          if (codeResult && codeResult.files && Array.isArray(codeResult.files)) {
-            // Create files in the webcontainer
-            await createFiles(codeResult.files);
-            
-            // Show summary message
-            const fileNames = codeResult.files.map((file: CodeFile) => file.filename).join(', ');
-            setMessages(prev => [...prev, {
-              sender: 'assistant',
-              content: `I've created the following files for your project:\n${codeResult.files.map((file: CodeFile) => `- ${file.filename}`).join('\n')}\n\nYou can now view and edit these files in the editor.`,
-              type: 'text'
-            }]);
-            
-            // Step 5: Workflow complete
-            setWorkflowState('complete');
-          } else {
-            throw new Error('Invalid code generation result');
-          }
-        } catch (error) {
-          console.error('Error processing code generation:', error);
-          throw new Error(`Failed to generate valid code: ${error.message}`);
-        }
-      } else {
-        throw new Error("Dependencies installation failed or was not completed. Cannot proceed with code generation.");
-      }
-      
     } catch (error) {
       console.error('Error in project workflow:', error);
       setMessages(prev => [...prev, {

@@ -7,9 +7,11 @@ import cors from 'cors';
 import { useLLM } from './ai.js';
 import { 
   commandGeneratorPrompt, 
-  codeGeneratorPrompt, 
+  codeGeneratorPrompt,
+  projectPlannerPrompt,
   createCommandPrompt, 
-  createCodePrompt 
+  createCodePrompt,
+  createPlanPrompt
 } from './prompts.js';
 
 const app = express();
@@ -97,6 +99,112 @@ async function understandIntent(message) {
       details: "Failed to parse the intent",
       requiresMoreInfo: true,
       clarificationQuestion: "Could you please clarify what you're looking for?"
+    };
+  }
+}
+
+/**
+ * Create a project plan using the AI model
+ * @param {Object} planningContext - Context information for planning
+ * @returns {Object} - Project plan with structure, dependencies, etc.
+ */
+async function createProjectPlan(planningContext) {
+  try {
+    const planPrompt = `
+      You are a software architect planning a project based on this request:
+      "${planningContext.userRequest}"
+      
+      Create a project plan with:
+      1. A list of dependencies to install
+      2. A file structure with key files
+      3. A description of the main components
+      
+      FORMAT YOUR RESPONSE AS JSON with this structure:
+      {
+        "projectName": "name of the project",
+        "description": "brief description",
+        "dependencies": ["list", "of", "dependencies"],
+        "devDependencies": ["list", "of", "dev", "dependencies"],
+        "fileStructure": [
+          { "path": "file/path.ext", "description": "what this file does" }
+        ],
+        "components": [
+          { "name": "ComponentName", "purpose": "what this component does" }
+        ]
+      }
+      
+      IMPORTANT: Wrap your response in markdown code block for JSON like this:
+      \`\`\`json
+      {
+        "your": "json response here"
+      }
+      \`\`\`
+      
+      DO NOT include any text outside of the code block.
+    `;
+    
+    const response = await useLLM(planPrompt);
+    
+    // Try to extract the JSON from the response
+    try {
+      // First check if it's a valid JSON as is
+      try {
+        const parsed = JSON.parse(response);
+        return {
+          result: JSON.stringify(parsed), // Convert back to string for consistent handling
+          success: true
+        };
+      } catch (directParseError) {
+        // Not direct JSON, try to extract it from markdown
+        // Check if the response contains a code block
+        const jsonRegex = /```(?:json)?\s*(\{[\s\S]*?\})\s*```/;
+        const match = response.match(jsonRegex);
+        
+        if (match && match[1]) {
+          // If we found JSON in a code block, parse that to validate and then stringify
+          const parsed = JSON.parse(match[1]);
+          return {
+            result: JSON.stringify(parsed), // Convert back to string for consistent handling
+            success: true
+          };
+        }
+        
+        // If no code block is found, try to find JSON directly
+        const jsonStart = response.indexOf('{');
+        const jsonEnd = response.lastIndexOf('}');
+        
+        if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
+          const jsonStr = response.substring(jsonStart, jsonEnd + 1);
+          const parsed = JSON.parse(jsonStr);
+          return {
+            result: JSON.stringify(parsed), // Convert back to string for consistent handling
+            success: true
+          };
+        }
+        
+        // If we can't extract JSON, return the raw response
+        // This will likely fail parsing on the client, but we've done our best
+        return {
+          result: `\`\`\`json\n${response}\n\`\`\``,
+          success: true,
+          raw: response
+        };
+      }
+    } catch (error) {
+      console.error('Error parsing plan response:', error);
+      return {
+        result: null,
+        success: false,
+        error: 'Failed to generate valid project plan JSON',
+        raw: response
+      };
+    }
+  } catch (error) {
+    console.error('Error creating project plan:', error);
+    return {
+      result: null,
+      success: false,
+      error: error.message
     };
   }
 }
@@ -227,6 +335,48 @@ app.post('/understand', async (req, res) => {
     return res.status(200).json({ intent });
   } catch (error) {
     console.error('Error in understand endpoint:', error);
+    return res.status(500).json({ 
+      error: 'Internal server error',
+      message: error.message 
+    });
+  }
+});
+
+// Plan endpoint - Takes planning context and returns a project plan
+app.post('/plan', async (req, res) => {
+  try {
+    const planningContext = req.body;
+    
+    if (!planningContext || !planningContext.userRequest) {
+      return res.status(400).json({ 
+        error: 'User request is required for planning' 
+      });
+    }
+    
+    const planResult = await createProjectPlan(planningContext);
+    
+    if (!planResult.success) {
+      return res.status(500).json({ 
+        error: 'Failed to create project plan',
+        message: planResult.error,
+        response: planResult 
+      });
+    }
+    
+    // Convert the result to a string if it's an object
+    // This ensures the frontend can use string methods like match() on it
+    const resultString = typeof planResult.result === 'object' 
+      ? JSON.stringify(planResult.result)
+      : planResult.result;
+    
+    return res.status(200).json({ 
+      response: {
+        result: resultString,
+        success: true
+      }
+    });
+  } catch (error) {
+    console.error('Error in plan endpoint:', error);
     return res.status(500).json({ 
       error: 'Internal server error',
       message: error.message 

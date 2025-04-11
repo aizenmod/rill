@@ -40,6 +40,72 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
   const commandExecutingRef = useRef<string | null>(null);
   const outputBufferRef = useRef<string>('');
   const promptDetectedRef = useRef<boolean>(false);
+  const commandQueueRef = useRef<string[]>([]);
+  const isProcessingCommandRef = useRef<boolean>(false);
+  const writerRef = useRef<WritableStreamDefaultWriter<any> | null>(null);
+
+  // Process the command queue
+  const processCommandQueue = async () => {
+    if (isProcessingCommandRef.current || commandQueueRef.current.length === 0) {
+      return;
+    }
+
+    isProcessingCommandRef.current = true;
+    
+    try {
+      const cmd = commandQueueRef.current[0];
+      
+      if (!xtermRef.current || !shellProcessRef.current) {
+        throw new Error('Terminal or shell not initialized');
+      }
+
+      // Set currently executing command
+      commandExecutingRef.current = cmd;
+      promptDetectedRef.current = false;
+      
+      // Write command to shell input using our safe method
+      const success = await writeToShellInput(`${cmd}\n`);
+      
+      if (!success) {
+        throw new Error('Failed to write command to shell');
+      }
+      
+      // Let parent component know about command
+      if (onCommand) {
+        onCommand(cmd);
+      }
+      
+      // Remove the command from the queue after a delay to ensure it's complete
+      setTimeout(() => {
+        commandQueueRef.current.shift();
+        isProcessingCommandRef.current = false;
+        
+        // Process next command if there are any
+        if (commandQueueRef.current.length > 0) {
+          processCommandQueue();
+        }
+        
+        setIsLoading(false);
+        if (onComplete) {
+          onComplete();
+        }
+      }, 2000);
+    } catch (err) {
+      console.error('Error processing command queue:', err);
+      commandQueueRef.current.shift();
+      isProcessingCommandRef.current = false;
+      setIsLoading(false);
+      setError(`Error executing command: ${err instanceof Error ? err.message : String(err)}`);
+      commandExecutingRef.current = null;
+      
+      // Process next command if there are any
+      if (commandQueueRef.current.length > 0) {
+        setTimeout(() => {
+          processCommandQueue();
+        }, 1000);
+      }
+    }
+  };
 
   // Expose methods via ref
   useImperativeHandle(ref, () => ({
@@ -124,6 +190,11 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
         // Start shell in the WebContainer
         const shellProcess = await startShell(terminal);
         shellProcessRef.current = shellProcess;
+
+        // Set up terminal input handler - use our safe write method
+        terminal.onData((data) => {
+          writeToShellInput(data);
+        });
 
         // If a command is provided, execute it
         if (command) {
@@ -266,18 +337,37 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
         })
       );
       
-      // Pipe terminal input to shell
-      const input = shellProcess.input.getWriter();
-      terminal.onData((data) => {
-        input.write(data);
-      });
-      
+      // Store the shell process but don't get a writer here
+      // We'll handle all input through a controlled approach
       setIsLoading(false);
       return shellProcess;
     } catch (err) {
       setIsLoading(false);
       setError(`Error starting shell: ${err instanceof Error ? err.message : String(err)}`);
       throw err;
+    }
+  };
+
+  // Safe way to write to shell input
+  const writeToShellInput = async (text: string): Promise<boolean> => {
+    if (!shellProcessRef.current) {
+      return false;
+    }
+
+    try {
+      // Create a new writer for each write operation to avoid lock issues
+      const writer = shellProcessRef.current.input.getWriter();
+      
+      try {
+        await writer.write(text);
+        return true;
+      } finally {
+        // Always release the writer when done, even if there was an error
+        writer.releaseLock();
+      }
+    } catch (error) {
+      console.error('Error writing to shell input:', error);
+      return false;
     }
   };
 
@@ -291,35 +381,18 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
     setIsLoading(true);
     
     try {
-      // Set currently executing command
-      commandExecutingRef.current = cmd;
-      promptDetectedRef.current = false;
+      // Add command to queue
+      commandQueueRef.current.push(cmd);
       
-      // Write command to shell input
-      const input = shellProcessRef.current.input.getWriter();
-      input.write(`${cmd}\n`);
-      
-      // Release the writer to allow further input
-      input.releaseLock();
-      
-      // Let parent component know about command
-      if (onCommand) {
-        onCommand(cmd);
+      // Process the queue if not already processing
+      if (!isProcessingCommandRef.current) {
+        processCommandQueue();
       }
-      
-      // For legacy support - will be removed when all callers use the promise-based API
-      setTimeout(() => {
-        setIsLoading(false);
-        if (onComplete) {
-          onComplete();
-        }
-      }, 2000);
       
       return true;
     } catch (err) {
       setIsLoading(false);
       setError(`Error executing command: ${err instanceof Error ? err.message : String(err)}`);
-      commandExecutingRef.current = null;
       return false;
     }
   };
