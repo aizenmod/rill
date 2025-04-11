@@ -1,0 +1,387 @@
+* {
+  box-sizing: border-box;
+}
+
+body, html {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+}
+
+/* Hide scrollbars but maintain scroll functionality */
+::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  background: transparent;
+}
+
+/* Firefox */
+* {
+  scrollbar-width: none;
+}
+
+/* IE and Edge */
+* {
+  -ms-overflow-style: none;
+}
+
+#root {
+  height: 100%;
+}
+
+.container {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  background-color: #1e1e1e;
+  color: #d4d4d4;
+  position: relative;
+}
+
+.sidebar {
+  width: 250px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background-color: #252526;
+  color: #cccccc;
+  border-right: 1px solid #3c3c3c;
+}
+
+.sidebar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px;
+  border-bottom: 1px solid #3c3c3c;
+  font-weight: bold;
+  font-size: 14px;
+}
+
+.file-tree-wrapper {
+  flex: 1;
+  overflow: auto;
+}
+
+.main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background-color: #1e1e1e;
+  overflow: hidden;
+  transition: margin-right 0.3s ease;
+}
+
+/* Apply margin to main content when chat is visible */
+.main-content.chat-visible {
+  margin-right: 350px;
+}
+
+/* View Controls */
+.view-controls {
+  display: flex;
+  background-color: #2d2d2d;
+  border-bottom: 1px solid #3c3c3c;
+  padding: 5px 10px;
+  gap: 5px;
+}
+
+.view-button {
+  padding: 8px 16px;
+  background-color: #3c3c3c;
+  color: #cccccc;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.view-button:hover {
+  background-color: #4c4c4c;
+}
+
+.view-button.active {
+  background-color: #0e639c;
+  color: white;
+}
+
+.terminal-toggle-button {
+  padding: 8px 16px;
+  background-color: #3c3c3c;
+  color: #cccccc;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  margin-left: auto;
+}
+
+.terminal-toggle-button:hover {
+  background-color: #4c4c4c;
+}
+
+.terminal-toggle-button.active {
+  background-color: #0e639c;
+  color: white;
+}
+
+.chat-toggle-button {
+  padding: 8px 16px;
+  background-color: #3c3c3c;
+  color: #cccccc;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  margin-left: 5px;
+}
+
+.chat-toggle-button:hover {
+  background-color: #4c4c4c;
+}
+
+.chat-toggle-button.active {
+  background-color: #0e639c;
+  color: white;
+}
+
+.terminal-collapse-button {
+  padding: 8px 16px;
+  background-color: #3c3c3c;
+  color: #cccccc;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  margin-left: 5px;
+}
+
+.terminal-collapse-button:hover {
+  background-color: #4c4c4c;
+}
+
+/* Content Area */
+.content-area {
+  flex: 1;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Terminal integration with content area */
+.content-area.with-terminal {
+  display: flex;
+  flex-direction: column;
+}
+
+.content-area.with-terminal .main-view-container {
+  flex: 1;
+  position: relative;
+  display: none;
+}
+
+.content-area.with-terminal .main-view-container.active {
+  display: flex;
+}
+
+.content-area.terminal-collapsed .main-view-container {
+  flex: 1;
+}
+
+/* Main view containers (preview and editor) */
+.main-view-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: none;
+  overflow: auto;
+}
+
+.main-view-container.active {
+  display: block;
+}
+
+/* Terminal resize handle */
+.terminal-resize-handle {
+  width: 100%;
+  height: 5px;
+  background-color: #2d2d2d;
+  cursor: ns-resize;
+  position: relative;
+  z-index: 20;
+}
+
+.terminal-resize-handle:hover, 
+.terminal-resize-handle:active {
+  background-color: #0e639c;
+}
+
+/* Terminal container */
+.terminal-container {
+  background-color: #1e1e1e;
+  border-top: 1px solid #3c3c3c;
+  display: flex;
+  flex-direction: column;
+  min-height: 100px;
+  max-height: 80vh;
+  position: relative;
+  z-index: 10;
+  resize: vertical;
+}
+
+.terminal-container.collapsed {
+  height: 30px !important;
+  min-height: 30px;
+  overflow: hidden;
+  resize: none;
+}
+
+.terminal-header {
+  background-color: #2d2d2d;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #cccccc;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  user-select: none;
+}
+
+.terminal-header:hover {
+  background-color: #3c3c3c;
+}
+
+.terminal-collapse-icon {
+  font-size: 10px;
+  color: #cccccc;
+}
+
+.terminal {
+  flex: 1;
+  overflow: hidden;
+}
+
+/* Debug Panel */
+.debug-panel {
+  height: 200px;
+  background-color: #1e1e1e;
+  border-top: 1px solid #3c3c3c;
+  overflow: auto;
+  padding: 10px;
+  font-family: monospace;
+  font-size: 12px;
+  color: #dcdcdc;
+}
+
+.debug-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.debug-panel-header h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.debug-logs {
+  white-space: pre-wrap;
+  overflow: auto;
+}
+
+.debug-entry {
+  padding: 2px 0;
+  border-bottom: 1px solid #333333;
+  line-height: 1.4;
+}
+
+.debug-button {
+  padding: 5px 10px;
+  background-color: #3c3c3c;
+  color: #cccccc;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.debug-button:hover {
+  background-color: #4c4c4c;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .container {
+    flex-direction: column;
+  }
+  
+  .sidebar {
+    width: 100%;
+    height: 250px;
+  }
+}
+
+.editor {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.editor textarea {
+  width: 100%;
+  height: 100%;
+  border: none;
+  padding: 10px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  resize: none;
+  flex: 1;
+  background-color: #1e1e1e;
+  color: #d4d4d4;
+  line-height: 1.5;
+  font-size: 14px;
+}
+
+.editor-header {
+  background-color: #2d2d2d;
+  padding: 5px 10px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  border-bottom: 1px solid #3c3c3c;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  color: #cccccc;
+}
+
+.current-file {
+  font-weight: bold;
+  color: #ffffff;
+}
+
+.preview {
+  flex: 1;
+  background-color: #ffffff;
+  height: 100%;
+}
+
+.preview iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+.monaco-editor-container {
+  width: 100%;
+  height: 100%;
+  flex: 1;
+  overflow: hidden;
+} 
