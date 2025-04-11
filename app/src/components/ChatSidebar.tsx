@@ -154,7 +154,7 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
     }
   };
 
-  // Execute a Vite project creation command with non-interactive flags
+  // Execute a Vite project creation command with handling for interactive prompts
   const executeNonInteractiveViteCommand = async (command: string): Promise<boolean> => {
     try {
       // Parse the Vite command to extract project name and template
@@ -174,27 +174,60 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
         }
       }
       
-      // Create a new non-interactive command
-      const nonInteractiveCommand = `npm create vite@latest ${projectName} -- --template ${template}`;
+      // We'll use the interactive command and let the Terminal component handle the prompts
+      const interactiveCommand = `npm create vite@latest ${projectName}`;
       
       setMessages(prev => [...prev, {
         sender: 'assistant',
-        content: `Converting to non-interactive command:\n\`\`\`\n${nonInteractiveCommand}\n\`\`\``,
+        content: `Running interactive command:\n\`\`\`\n${interactiveCommand}\n\`\`\`\nThe terminal will automatically respond to prompts as needed.`,
         type: 'text'
       }]);
       
-      // Execute the non-interactive command
+      // Set up event listener for terminal outputs to track progress
+      let installationComplete = false;
+      let selectedFramework = false;
+      let selectedVariant = false;
+      
+      const terminalOutputHandler = (event: CustomEvent) => {
+        const output = event.detail?.output || '';
+        
+        if (output.includes('Select a framework:')) {
+          console.log('Terminal is asking for framework selection');
+          selectedFramework = true;
+        } else if (output.includes('Select a variant:')) {
+          console.log('Terminal is asking for variant selection');
+          selectedVariant = true;
+        } else if (output.includes('Scaffolding project')) {
+          console.log('Project scaffolding in progress');
+        } else if (output.includes('Done. Now run:')) {
+          console.log('Installation complete');
+          installationComplete = true;
+        }
+      };
+      
+      window.addEventListener('terminal-output', terminalOutputHandler as EventListener);
+      
+      // Execute the interactive command
       let success = false;
       if (onRunCommand) {
-        success = await onRunCommand(nonInteractiveCommand);
+        success = await onRunCommand(interactiveCommand);
         
-        // If command failed, retry once after a short delay
-        if (!success) {
-          console.log('Command failed, retrying after delay...');
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          success = await onRunCommand(nonInteractiveCommand);
+        // Wait for the installation to complete
+        const maxAttempts = 30; // 30 seconds timeout
+        let attempts = 0;
+        while (!installationComplete && attempts < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          attempts++;
+        }
+        
+        // If we're still not done after timeout, check if we at least selected the framework
+        if (!installationComplete && selectedFramework) {
+          success = true; // We'll consider it partial success and continue
         }
       }
+      
+      // Clean up event listener
+      window.removeEventListener('terminal-output', terminalOutputHandler as EventListener);
       
       // If successful, wait a moment and then cd into the project directory
       if (success) {
@@ -215,19 +248,10 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
             type: 'text'
           }]);
           
-          // Also change the working directory in WebContainer
-          const webcontainer = webcontainerService.getInstance();
-          if (webcontainer) {
-            try {
-              const process = await webcontainer.spawn('cd', [projectName]);
-              await process.exit;
-            } catch (error) {
-              console.warn('Error changing directory in WebContainer:', error);
-              // This is not critical, continue with the workflow
-            }
-          }
+          // Wait for cd command to complete
+          await new Promise(resolve => setTimeout(resolve, 1000));
           
-          // Install dependencies
+          // Install dependencies if not already done by the scaffolding tool
           const installCommand = 'npm install';
           
           setMessages(prev => [...prev, {
@@ -238,13 +262,22 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
           
           if (onRunCommand) {
             await onRunCommand(installCommand);
+            // Wait for dependencies to install
+            await new Promise(resolve => setTimeout(resolve, 5000));
+          }
+        } else {
+          console.warn(`Project directory ${projectName} not found, continuing anyway`);
+          // Try to create it manually as fallback
+          if (onRunCommand) {
+            await onRunCommand(`mkdir -p ${projectName} && cd ${projectName}`);
+            await new Promise(resolve => setTimeout(resolve, 1000));
           }
         }
       }
       
       return success;
     } catch (error) {
-      console.error('Error executing non-interactive Vite command:', error);
+      console.error('Error executing interactive Vite command:', error);
       return false;
     }
   };

@@ -17,7 +17,7 @@ export async function useLLM(inputText) {
     }
 
     const { text } = await generateText({
-      model: google("models/gemini-2.0-flash-exp", {
+      model: google("models/gemini-2.5-pro-exp-03-25", {
         apiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY
       }),
       prompt: inputText

@@ -270,7 +270,7 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Process terminal output to detect command completion
+  // Process terminal output to detect command completion and interactive prompts
   const processOutput = (data: string) => {
     // Append to buffer
     outputBufferRef.current += data;
@@ -284,6 +284,42 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
     window.dispatchEvent(new CustomEvent('terminal-output', { 
       detail: { output: data, fullBuffer: outputBufferRef.current } 
     }));
+    
+    // Check for interactive prompts that require user input
+    const promptsToAutoRespond = [
+      { pattern: /Ok to proceed\? \(y\)/, response: 'y\n' },
+      { pattern: /\? Choose a variant:/, response: '\n' }, // Just press enter for default
+      { pattern: /\? Select a framework:/, response: '\n' }, // Just press enter for default
+      { pattern: /\? Package name:/, response: '\n' }, // Accept default name
+      { pattern: /\? Would you like to install dependencies.*\(Y\/n\)/, response: 'Y\n' },
+      { pattern: /\? Would you like to run `npm run dev`.*\(Y\/n\)/, response: 'Y\n' },
+      { pattern: /password.*:/, response: '\n' }, // Skip password prompts with enter
+      { pattern: /Do you want to continue\? \(y\/n\)/, response: 'y\n' },
+    ];
+    
+    // Check for any interactive prompts
+    for (const { pattern, response } of promptsToAutoRespond) {
+      if (pattern.test(outputBufferRef.current)) {
+        console.log(`Detected interactive prompt: ${pattern}`);
+        
+        // Auto-respond after a short delay to make it feel more natural
+        setTimeout(() => {
+          if (shellProcessRef.current) {
+            try {
+              // Use our safe write method
+              writeToShellInput(response);
+              console.log(`Auto-responded with: ${response.trim()}`);
+            } catch (error) {
+              console.error('Error auto-responding to prompt:', error);
+            }
+          }
+        }, 500);
+        
+        // Clear this pattern from the buffer to avoid responding multiple times
+        outputBufferRef.current = outputBufferRef.current.replace(pattern, '');
+        break;
+      }
+    }
     
     // Check for shell prompt pattern ($ or > at end of line)
     const promptPattern = /[\r\n][^$>]*[$>]\s*$/;
