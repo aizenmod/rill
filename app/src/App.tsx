@@ -216,7 +216,7 @@ export default function App() {
     <div className="container">
       <div className="sidebar">
         <div className="sidebar-header">
-          <span>Dual Editor</span>
+          <span>Dual Editor v1</span>
           <div>
             <button 
               className="debug-button" 
